@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Animal Classifier</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Animal Classifier</h1>
+        <form id="upload-form">
+            <label for="file-upload" class="file-upload-label" id="file-label">
+                Click to choose an image
+            </label>
+            <input type="file" name="file" id="file-upload" accept="image/*" required>
+            
+            <div id="image-preview-container" style="display: none;">
+                <img id="image-preview" src="#" alt="Image preview" />
+            </div>
+
+            <button type="submit" id="classify-btn" disabled>Classify</button>
+        </form>
+        <button id="heatmap-btn" style="display:none; margin-top:15px; width:100%; background:linear-gradient(90deg,#ff512f 0%,#dd2476 100%); color:#fff; border:none; border-radius:8px; padding:12px 25px; font-size:16px; cursor:pointer;">Show Heatmap</button>
+        <div class="spinner" id="spinner"></div>
+        <div id="result-container"></div>
+        <div id="heatmap-container" style="margin-top:20px;"></div>
+        <hr class="history-divider">
+        <div id="history-section" class="history-section">
+            <h2>Prediction History</h2>
+            <div id="history-list" class="history-list"></div>
+        </div>
+    </div>
+    <!-- Modal for predictions and heatmap -->
+    <div id="modal-overlay" class="modal-overlay" style="display:none;"></div>
+    <div id="modal" class="modal" style="display:none;">
+        <span id="modal-close" class="modal-close">&times;</span>
+        <div id="modal-content"></div>
+    </div>
+
+    <script>
+        const uploadForm = document.getElementById('upload-form');
+        const fileInput = document.getElementById('file-upload');
+        const fileLabel = document.getElementById('file-label');
+        const classifyBtn = document.getElementById('classify-btn');
+        const imagePreviewContainer = document.getElementById('image-preview-container');
+        const imagePreview = document.getElementById('image-preview');
+        const resultContainer = document.getElementById('result-container');
+        const spinner = document.getElementById('spinner');
+        let lastUploadedFile = null;
+        let lastImageDataUrl = null;
+        let lastPrediction = null;
+        let lastConfidence = null;
+        let lastHeatmapBlob = null;
+        let history = [];
+
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files[0];
+            lastUploadedFile = file;
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imagePreview.src = e.target.result;
+                    lastImageDataUrl = e.target.result;
+                    imagePreviewContainer.style.display = 'block';
+                    fileLabel.textContent = file.name;
+                };
+                reader.readAsDataURL(file);
+                classifyBtn.disabled = false;
+                resultContainer.innerHTML = '';
+                document.getElementById('heatmap-btn').style.display = 'none';
+                document.getElementById('heatmap-container').innerHTML = '';
+            }
+        });
+
+        function showModal(contentHtml) {
+            document.getElementById('modal-content').innerHTML = contentHtml;
+            document.getElementById('modal-overlay').style.display = 'block';
+            document.getElementById('modal').style.display = 'block';
+            setTimeout(() => {
+                document.getElementById('modal').classList.add('show');
+            }, 10);
+        }
+        function closeModal() {
+            document.getElementById('modal').classList.remove('show');
+            setTimeout(() => {
+                document.getElementById('modal').style.display = 'none';
+                document.getElementById('modal-overlay').style.display = 'none';
+            }, 200);
+        }
+        document.getElementById('modal-close').onclick = closeModal;
+        document.getElementById('modal-overlay').onclick = closeModal;
+
+        // Utility to convert Blob to base64
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+        // Save history to localStorage
+        async function addToHistory(imageDataUrl, prediction, confidence, heatmapBlob) {
+            const heatmapBase64 = heatmapBlob ? await blobToBase64(heatmapBlob) : null;
+            history.unshift({ imageDataUrl, prediction, confidence, heatmapBase64 });
+            localStorage.setItem('predictionHistory', JSON.stringify(history));
+            renderHistory();
+        }
+        // Load history from localStorage
+        function loadHistory() {
+            const data = localStorage.getItem('predictionHistory');
+            if (data) {
+                try {
+                    history = JSON.parse(data);
+                } catch (e) {
+                    history = [];
+                }
+            } else {
+                history = [];
+            }
+        }
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            if (history.length === 0) {
+                list.innerHTML = '<p style="color:#888;text-align:center;">No predictions yet.</p>';
+                return;
+            }
+            list.innerHTML = history.map((item, idx) => `
+                <div class='history-item' data-idx='${idx}'>
+                    <img src='${item.imageDataUrl}' class='history-thumb' alt='history image'>
+                    <div class='history-info'>
+                        <div class='history-class'>${item.prediction}</div>
+                        <div class='history-confidence'>${item.confidence}</div>
+                    </div>
+                </div>
+            `).join('');
+            Array.from(document.getElementsByClassName('history-item')).forEach(el => {
+                el.onclick = function() {
+                    const idx = +el.getAttribute('data-idx');
+                    showHistoryModal(idx);
+                };
+            });
+        }
+        function showHistoryModal(idx) {
+            const item = history[idx];
+            let html = `<div style='text-align:center;'>
+                <img src='${item.imageDataUrl}' style='max-width:60vw;max-height:40vh;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);margin-bottom:18px;'><br>
+                <h2 style='margin-bottom:10px;'>Prediction</h2>
+                <p style='font-size:1.3em;'><strong>Class:</strong> <span style='color:#00adb5;'>${item.prediction}</span></p>
+                <p style='font-size:1.1em;'><strong>Confidence:</strong> ${item.confidence}</p>
+                <button class='modal-btn' onclick='window.showHistoryHeatmap(${idx})' style='margin-top:18px;background:linear-gradient(90deg,#ff512f 0%,#dd2476 100%);color:#fff;border:none;border-radius:8px;padding:12px 25px;font-size:16px;cursor:pointer;'>Show Heatmap</button>
+            </div>`;
+            showModal(html);
+        }
+        window.showHistoryHeatmap = function(idx) {
+            const item = history[idx];
+            if (item.heatmapBase64) {
+                showModal(`<img src='${item.heatmapBase64}' alt='Grad-CAM Heatmap' style='max-width:90vw;max-height:80vh;display:block;margin:0 auto;border-radius:18px;box-shadow:0 2px 24px rgba(0,0,0,0.5);'>`);
+            } else {
+                showModal('<p style="color:red;">No heatmap available for this prediction.</p>');
+            }
+        };
+
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            spinner.style.display = 'block';
+            classifyBtn.disabled = true;
+            resultContainer.innerHTML = '';
+            document.getElementById('heatmap-btn').style.display = 'none';
+            document.getElementById('heatmap-container').innerHTML = '';
+            lastPrediction = null;
+            lastConfidence = null;
+            lastHeatmapBlob = null;
+            try {
+                const response = await fetch('/predict', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    lastPrediction = data.predicted_class;
+                    lastConfidence = data.confidence;
+                    const html = `
+                        <div style='text-align:center;'>
+                        <h2 style='margin-bottom:10px;'>Prediction</h2>
+                        <p style='font-size:1.3em;'><strong>Class:</strong> <span style='color:#00adb5;'>${data.predicted_class}</span></p>
+                        <p style='font-size:1.1em;'><strong>Confidence:</strong> ${data.confidence}</p>
+                        </div>
+                    `;
+                    showModal(html);
+                    document.getElementById('heatmap-btn').style.display = 'block';
+                } else {
+                    showModal(`<p style=\"color: red;\">Error: ${data.error}</p>`);
+                }
+            } catch (error) {
+                showModal(`<p style=\"color: red;\">An unexpected error occurred.</p>`);
+            } finally {
+                spinner.style.display = 'none';
+                classifyBtn.disabled = false;
+            }
+        });
+
+        document.getElementById('heatmap-btn').addEventListener('click', async () => {
+            if (!lastUploadedFile) return;
+            const formData = new FormData();
+            formData.append('file', lastUploadedFile);
+            showModal('<div class="spinner" style="display:block;margin:40px auto;"></div>');
+            try {
+                const response = await fetch('/heatmap', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    const blob = await response.blob();
+                    lastHeatmapBlob = blob;
+                    showModal(`<img src="${URL.createObjectURL(blob)}" alt="Grad-CAM Heatmap" style="max-width:90vw;max-height:80vh;display:block;margin:0 auto;border-radius:18px;box-shadow:0 2px 24px rgba(0,0,0,0.5);">`);
+                    // Add to history only if prediction and confidence are available
+                    if (lastImageDataUrl && lastPrediction && lastConfidence) {
+                        await addToHistory(lastImageDataUrl, lastPrediction, lastConfidence, blob);
+                        // Reset so duplicate entries are not added
+                        lastPrediction = null;
+                        lastConfidence = null;
+                        lastImageDataUrl = null;
+                    }
+                } else {
+                    const data = await response.json();
+                    showModal(`<p style=\"color: red;\">Error: ${data.error}</p>`);
+                }
+            } catch (error) {
+                showModal(`<p style=\"color: red;\">An unexpected error occurred.</p>`);
+            }
+        });
+
+        // Render history on load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadHistory();
+            renderHistory();
+        });
+    </script>
+</body>
+</html> 
